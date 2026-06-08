@@ -1,89 +1,63 @@
-require("dotenv").config();
-const express = require("express");
-const path = require("path");
-const { handleMessage } = require("./bot");
-const { resolveButtonId, sendText } = require("./whatsapp");
+const express = require('express');
+const path = require('path');
+const { handleIncomingMessage } = require('./src/bot'); // Aapki bot logic file
 
 const app = express();
+const port = process.env.PORT || 8080;
+
+// Middleware - Yeh lines dashboard ka data aur static files samajhne ke liye zaroori hain
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 
-if (!global.orders) global.orders = [];
+// Global orders array initialize karna agar pehle se nahi hai
+if (!global.orders) {
+    global.orders = [];
+}
 
-// ===== GREEN API WEBHOOK =====
-app.post("/webhook", async (req, res) => {
-  try {
-    const body = req.body;
-    const typeWebhook = body.typeWebhook;
-
-    if (typeWebhook === "incomingMessageReceived") {
-      const senderData = body.senderData;
-      const messageData = body.messageData;
-      if (!senderData || !messageData) return res.sendStatus(200);
-
-      const chatId = senderData.chatId;
-      const from = "+" + chatId.replace("@c.us", "");
-      let messageText = "";
-
-      if (messageData.typeMessage === "textMessage") {
-        messageText = messageData.textMessageData?.textMessage || "";
-      } else if (messageData.typeMessage === "extendedTextMessage") {
-        messageText = messageData.extendedTextMessageData?.text || "";
-      }
-
-      if (messageText) {
-        const resolved = resolveButtonId(from, messageText);
-        console.log(`📩 From: ${from} | Raw: ${messageText} | Resolved: ${resolved}`);
-        await handleMessage(from, resolved);
-      }
+// 1. WhatsApp Webhook Route (Jo Twilio ya Infobip se message leta hai)
+app.post('/webhook', async (req, res) => {
+    try {
+        // Aapke bot handler ko request pass karna
+        await handleIncomingMessage(req, res);
+    } catch (error) {
+        console.error("Webhook error:", error);
+        res.status(500).send("Internal Server Error");
     }
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("Webhook error:", err);
-    res.sendStatus(500);
-  }
 });
 
-// ===== DASHBOARD API =====
-app.get("/api/orders", (req, res) => {
-  res.json(global.orders || []);
+// 2. Dashboard API - Saare active orders get karne ke liye
+app.get('/api/orders', (req, res) => {
+    res.json(global.orders || []);
 });
 
-app.post("/api/orders/:orderId/status", async (req, res) => {
-  const { orderId } = req.params;
-  const { status } = req.body;
-  const order = global.orders.find(o => o.orderId === orderId);
-  if (!order) return res.status(404).json({ error: "Order not found" });
+// 3. Dashboard API - Order ka status (Pending -> Preparing -> Completed) update karne ke liye
+app.post('/api/update-status', (req, res) => {
+    const { orderId, status } = req.body;
+    
+    if (!global.orders) {
+        global.orders = [];
+    }
 
-  order.status = status;
-
-  // Client ko message bhejo
-  let msg = "";
-  if (status === "preparation") {
-    msg = `🍳 *Bistro Club*\n\nآپ کا آرڈر *${orderId}* تیار ہو رہا ہے!\n\nتھوڑا انتظار کریں... 😊`;
-  } else if (status === "dispatched") {
-    msg = `🛵 *Bistro Club*\n\nآپ کا آرڈر *${orderId}* راستے میں ہے!\n\nتھوڑی دیر میں پہنچ جائے گا 🎉`;
-  } else if (status === "completed") {
-    msg = `✅ *Bistro Club*\n\nآپ کا آرڈر *${orderId}* پہنچ گیا!\n\n🙏 شکریہ! ہمیں Rating دیں ⭐⭐⭐⭐⭐\n\nدوبارہ آرڈر کے لیے HI لکھیں 😊`;
-  }
-
-  if (msg && order.phone) {
-    await sendText(order.phone, msg);
-  }
-
-  res.json({ success: true, order });
+    // global.orders mein se order dhoondo uski ID se
+    const order = global.orders.find(o => o.orderId === orderId);
+    
+    if (order) {
+        order.status = status; // Status ko 'preparing' ya 'completed' set karega
+        console.log(`✅ [DASHBOARD] Order ${orderId} status updated to: ${status}`);
+        return res.json({ success: true, message: "Status updated successfully" });
+    } else {
+        console.log(`❌ [DASHBOARD] Order ${orderId} list mein nahi mila!`);
+        return res.status(404).json({ success: false, message: "Order not found" });
+    }
 });
 
-// ===== HEALTH CHECK =====
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+// 4. Default Route - Jo main dashboard HTML page load karega
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
 });
 
-app.get("/health", (req, res) => {
-  res.json({ status: "✅ Bistro Club Chatbot Running!", time: new Date().toLocaleString() });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🍕 Bistro Club Chatbot started on port ${PORT}`);
+// Server Start
+app.listen(port, () => {
+    console.log(`🍕 Bistro Club Chatbot & Dashboard started on port ${port}`);
 });
